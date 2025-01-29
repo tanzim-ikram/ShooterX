@@ -28,9 +28,17 @@ AiEsp32RotaryEncoder changeWeaponRotaryEncoder = AiEsp32RotaryEncoder(CHANGE_WEA
 bool sleepMPU = true;
 long mpuDelayMillis;
 
-bool buttonHeldStates[7];
-unsigned long debounceTime = 50;
-unsigned long lastDebounceTimes[7];
+// Track last button states
+bool fireHeld = false;
+bool aimHeld = false;
+bool forwardHeld = false;
+bool backwardHeld = false;
+bool sitHeld = false;
+bool reloadHeld = false;
+bool jumpHeld = false;
+bool middleMouseHeld = false;
+
+int lastWeaponValue = 1;  // Track last encoder value for weapon switching
 
 void IRAM_ATTR readThrowWeaponEncoderISR() {
   throwWeaponRotaryEncoder.readEncoder_ISR();
@@ -72,14 +80,9 @@ void setup() {
 
   changeWeaponRotaryEncoder.begin();
   changeWeaponRotaryEncoder.setup(readChangeWeaponEncoderISR);
-  changeWeaponRotaryEncoder.setBoundaries(1, 4, true); // Set boundaries to 1-4
+  changeWeaponRotaryEncoder.setBoundaries(1, 4, true);
 
   mpu.enableSleep(sleepMPU);
-
-  for (int i = 0; i < 7; i++) {
-    lastDebounceTimes[i] = 0;
-    buttonHeldStates[i] = false;
-  }
 }
 
 void loop() {
@@ -97,24 +100,17 @@ void loop() {
 
     combo.move((int)(g.gyro.z * -SPEED * 1.5), (int)(g.gyro.x * -SPEED * 1.5));
 
-    if (!digitalRead(AIM_BUTTON)) {
-      Serial.println("Right click");
-      combo.click(MOUSE_RIGHT);
-    }
+    // Handle Mouse Buttons as "Hold and Release"
+    handleMouseButton(AIM_BUTTON, &aimHeld, MOUSE_RIGHT);
+    handleMouseButton(FIRE_BUTTON, &fireHeld, MOUSE_LEFT);
+    handleMouseButton(THROW_WEAPON_ROTARY_SW, &middleMouseHeld, MOUSE_MIDDLE);
 
-    if (!digitalRead(FIRE_BUTTON)) {
-      Serial.println("Left click and Vibrate");
-      combo.click(MOUSE_LEFT);
-      digitalWrite(VIBRATOR_PIN, HIGH);
-      delay(200);
-      digitalWrite(VIBRATOR_PIN, LOW);
-    }
-
-    handleButton(FORWARD_MOVE_BUTTON, 'w', 2);
-    handleButton(BACKWARD_MOVE_BUTTON, 's', 3);
-    handleButton(SIT_BUTTON, 'c', 4);
-    handleButton(RELOAD_BUTTON, 'r', 5);
-    handleButton(JUMP_BUTTON, ' ', 6);
+    // Handle Keyboard Buttons
+    handleKeyboardButton(FORWARD_MOVE_BUTTON, &forwardHeld, 'w');
+    handleKeyboardButton(BACKWARD_MOVE_BUTTON, &backwardHeld, 's');
+    handleKeyboardButton(SIT_BUTTON, &sitHeld, 'c');
+    handleKeyboardButton(RELOAD_BUTTON, &reloadHeld, 'r');
+    handleKeyboardButton(JUMP_BUTTON, &jumpHeld, ' ');
 
     // Handle throwWeaponRotaryEncoder (mouse scroll)
     if (throwWeaponRotaryEncoder.encoderChanged()) {
@@ -123,52 +119,65 @@ void loop() {
 
       if (encoderValue > lastEncoderValue) {
         Serial.println("Scrolling up (Throw Weapon)");
-        combo.move(0, 0, 1); // Scroll up
+        combo.move(0, 0, 1);
       } else if (encoderValue < lastEncoderValue) {
         Serial.println("Scrolling down (Throw Weapon)");
-        combo.move(0, 0, -1); // Scroll down
+        combo.move(0, 0, -1);
       }
       lastEncoderValue = encoderValue;
     }
 
-    if (throwWeaponRotaryEncoder.isEncoderButtonClicked()) {
-      Serial.println("Middle click");
-      combo.click(MOUSE_MIDDLE);
-      delay(200);
-    }
-
-    // Handle changeWeaponRotaryEncoder (press 1-4)
+    // Handle changeWeaponRotaryEncoder (press top row 1, 2, 3, 4 keys)
     if (changeWeaponRotaryEncoder.encoderChanged()) {
       int encoderValue = changeWeaponRotaryEncoder.readEncoder();
-      static int lastEncoderValue = encoderValue;
 
-      if (encoderValue != lastEncoderValue) {
-        char key = '0' + encoderValue; // Map encoder value to keys '1' to '4'
-        Serial.print("Key press (Change Weapon): ");
-        Serial.println(key);
-        keyboard.press(key);
-        delay(100); // Simulate key press duration
-        keyboard.release(key);
-        lastEncoderValue = encoderValue;
+      if (encoderValue != lastWeaponValue) {
+        if (encoderValue >= 1 && encoderValue <= 4) {
+          char key = '0' + encoderValue; // Converts 1->'1', 2->'2', etc.
+          Serial.print("Key press (Change Weapon): ");
+          Serial.println(key);
+          keyboard.press(key);
+          delay(100);
+          keyboard.release(key);
+          lastWeaponValue = encoderValue;
+        }
       }
     }
   }
 }
 
-void handleButton(int buttonPin, char key, int index) {
-  if (!digitalRead(buttonPin)) {
-    if (!buttonHeldStates[index]) {
-      Serial.print("Key pressed: ");
-      Serial.println(key);
-      keyboard.press(key);
-      buttonHeldStates[index] = true;
-    }
-  } else {
-    if (buttonHeldStates[index]) {
-      Serial.print("Key released: ");
-      Serial.println(key);
-      keyboard.release(key);
-      buttonHeldStates[index] = false;
-    }
+// Function to Handle Keyboard Key Press and Release
+void handleKeyboardButton(int buttonPin, bool *buttonState, char key) {
+  bool pressed = !digitalRead(buttonPin);
+
+  if (pressed && !(*buttonState)) {
+    Serial.print("Key pressed: ");
+    Serial.println(key);
+    keyboard.press(key);
+    *buttonState = true;
+  } else if (!pressed && *buttonState) {
+    Serial.print("Key released: ");
+    Serial.println(key);
+    keyboard.release(key);
+    *buttonState = false;
+  }
+}
+
+// Function to Handle Mouse Button Hold and Release
+void handleMouseButton(int buttonPin, bool *buttonState, uint8_t mouseButton) {
+  bool pressed = !digitalRead(buttonPin);
+
+  if (pressed && !(*buttonState)) {
+    Serial.print("Mouse button pressed: ");
+    Serial.println(mouseButton == MOUSE_LEFT ? "Left Click" : 
+                   mouseButton == MOUSE_RIGHT ? "Right Click" : "Middle Click");
+    combo.press(mouseButton);  // Hold the button down
+    *buttonState = true;
+  } else if (!pressed && *buttonState) {
+    Serial.print("Mouse button released: ");
+    Serial.println(mouseButton == MOUSE_LEFT ? "Left Click" : 
+                   mouseButton == MOUSE_RIGHT ? "Right Click" : "Middle Click");
+    combo.release(mouseButton); // Release the button
+    *buttonState = false;
   }
 }
